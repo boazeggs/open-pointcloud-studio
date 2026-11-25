@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Compare the published and rebuilt uninstallers
+      - name: Download the checksummed release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -22,6 +22,9 @@ jobs:
             $sum = (Get-FileHash $file.FullName -Algorithm SHA256).Hash
             if (-not (Select-String -Path assets/SHA256SUMS -SimpleMatch "$($sum.ToLower())  $($file.Name)")) { throw "checksum mismatch for $file" }
           }
+      - name: Install the published release and check Authenticode
+        shell: pwsh
+        run: |
           function Inspect-Installation($setup, $directory) {
             $result = Start-Process $setup -ArgumentList @('/CURRENTUSER', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="{0}"' -f $directory)) -Wait -PassThru
             if ($result.ExitCode) { throw "Installer exited with $($result.ExitCode)" }
@@ -40,11 +43,28 @@ jobs:
           if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw 'Invalid release installer' }
           $before = Inspect-Installation $setup "$env:RUNNER_TEMP\published"
           Write-Host "Published uninstaller: $($before.Status)"
+      - name: Build and install with a disposable test certificate
+        shell: pwsh
+        run: |
+          $number = '2026.48.0'
+          function Inspect-Installation($setup, $directory) {
+            $result = Start-Process $setup -ArgumentList @('/CURRENTUSER', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="{0}"' -f $directory)) -Wait -PassThru
+            if ($result.ExitCode) { throw "Installer exited with $($result.ExitCode)" }
+            foreach ($leaf in 'open-pointcloud-studio.exe', 'OpenCADStudio.exe', 'unins000.exe') {
+              $sig = Get-AuthenticodeSignature (Join-Path $directory $leaf)
+              "$leaf $($sig.Status) $($sig.SignerCertificate.Subject) timestamp=$([bool]$sig.TimeStamperCertificate)" | Write-Host
+              if ($leaf -ne 'unins000.exe' -and ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate)) { throw "Invalid $leaf" }
+            }
+            $sig = Get-AuthenticodeSignature (Join-Path $directory 'unins000.exe')
+            $process = Start-Process (Join-Path $directory 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+            if ($process.ExitCode) { throw 'Uninstall failed' }
+            return $sig
+          }
           $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Disposable CI Windows test' -CertStoreLocation Cert:\CurrentUser\My
           $env:TEST_THUMBPRINT = $cert.Thumbprint
           $certFile = (Export-Certificate -Cert $cert -FilePath "$env:RUNNER_TEMP\ci.cer").FullName
-          Import-Certificate -FilePath $certFile -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
-          Import-Certificate -FilePath $certFile -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+          Import-Certificate -FilePath $certFile -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+          Import-Certificate -FilePath $certFile -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
           $signer = "$env:RUNNER_TEMP\test signer.ps1"
           @'
           param([string]$Path)
