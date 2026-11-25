@@ -1,0 +1,43 @@
+name: Native photo pane restart
+on:
+  push:
+    branches: [validation/pane-restart-78]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  restart:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows
+            binary: open-pointcloud-studio.exe
+          - runner: macos-latest
+            platform: macos
+            binary: open-pointcloud-studio
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download the reviewed CI build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 45597941280 -R OpenAEC-Foundation/open-pointcloud-studio -n open-pointcloud-studio-${{ matrix.platform }} -D bin
+          chmod +x bin/${{ matrix.binary }}
+      - name: Tear off the photo, quit the native app and compare the restored panes
+        shell: bash
+        run: |
+          python -m pip install numpy Pillow
+          python native/validation/document-panes/restart.py bin/${{ matrix.binary }} --recover-photo-window --output proof
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pane-restart-${{ matrix.platform }}
+          path: proof/
