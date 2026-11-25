@@ -1,0 +1,66 @@
+name: Installed Windows Authenticode proof
+on:
+  push:
+    branches: [validation/windows-uninstaller-2026480]
+permissions: {contents: read}
+jobs:
+  proof:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the published and rebuilt uninstallers
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $number = '2026.48.0'
+          $repo = 'OpenAEC-Foundation/open-pointcloud-studio'
+          gh release download "v$number" -R $repo -p '*_x64-setup.exe' -p '*_windows-x64.zip' -p SHA256SUMS -D assets
+          if ($LASTEXITCODE) { throw 'release download failed' }
+          foreach ($file in Get-ChildItem assets -Exclude SHA256SUMS) {
+            $sum = (Get-FileHash $file.FullName -Algorithm SHA256).Hash
+            if (-not (Select-String -Path assets/SHA256SUMS -SimpleMatch "$($sum.ToLower())  $($file.Name)")) { throw "checksum mismatch for $file" }
+          }
+          function Inspect-Installation($setup, $directory) {
+            $result = Start-Process $setup -ArgumentList @('/CURRENTUSER', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="{0}"' -f $directory)) -Wait -PassThru
+            if ($result.ExitCode) { throw "Installer exited with $($result.ExitCode)" }
+            foreach ($leaf in 'open-pointcloud-studio.exe', 'OpenCADStudio.exe', 'unins000.exe') {
+              $sig = Get-AuthenticodeSignature (Join-Path $directory $leaf)
+              "$leaf $($sig.Status) $($sig.SignerCertificate.Subject) timestamp=$([bool]$sig.TimeStamperCertificate)" | Write-Host
+              if ($leaf -ne 'unins000.exe' -and ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate)) { throw "Invalid $leaf" }
+            }
+            $sig = Get-AuthenticodeSignature (Join-Path $directory 'unins000.exe')
+            $process = Start-Process (Join-Path $directory 'unins000.exe') -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+            if ($process.ExitCode) { throw 'Uninstall failed' }
+            return $sig
+          }
+          $setup = (Resolve-Path "assets/*_x64-setup.exe").Path
+          $sig = Get-AuthenticodeSignature $setup
+          if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate) { throw 'Invalid release installer' }
+          $before = Inspect-Installation $setup "$env:RUNNER_TEMP\published"
+          Write-Host "Published uninstaller: $($before.Status)"
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Disposable CI Windows test' -CertStoreLocation Cert:\CurrentUser\My
+          $env:TEST_THUMBPRINT = $cert.Thumbprint
+          $certFile = (Export-Certificate -Cert $cert -FilePath "$env:RUNNER_TEMP\ci.cer").FullName
+          Import-Certificate -FilePath $certFile -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
+          Import-Certificate -FilePath $certFile -CertStoreLocation Cert:\CurrentUser\TrustedPublisher | Out-Null
+          $signer = "$env:RUNNER_TEMP\test signer.ps1"
+          @'
+          param([string]$Path)
+          $ErrorActionPreference = 'Stop'
+          $cert = Get-Item "Cert:\CurrentUser\My\$env:TEST_THUMBPRINT"
+          $sig = Set-AuthenticodeSignature -FilePath $Path -Certificate $cert -HashAlgorithm SHA256
+          if ($sig.Status -ne 'Valid') { throw "Test signing failed: $($sig.Status)" }
+          '@ | Set-Content $signer
+          Expand-Archive (Resolve-Path assets/*_windows-x64.zip) "$env:RUNNER_TEMP\source"
+          $source = "$env:RUNNER_TEMP\source\open-pointcloud-studio_${number}_windows-x64"
+          $options = @("/DAppVersion=$number", "/DSourceDir=$source", "/DOutputDir=$env:RUNNER_TEMP\rebuilt", '/DSignRelease', ('/SOpenAEC=pwsh.exe -NoProfile -NonInteractive -File $q{0}$q $f' -f $signer))
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" @options native\installer\windows.iss
+          if ($LASTEXITCODE) { throw 'ISCC failed' }
+          $setup = (Resolve-Path "$env:RUNNER_TEMP\rebuilt\*_x64-setup.exe").Path
+          $outer = Get-AuthenticodeSignature $setup
+          if ($outer.Status -ne 'Valid' -or $outer.SignerCertificate.Thumbprint -ne $cert.Thumbprint) { throw 'Rebuilt installer signature mismatch' }
+          $after = Inspect-Installation $setup "$env:RUNNER_TEMP\rebuilt app"
+          if ($after.Status -ne 'Valid' -or $after.SignerCertificate.Thumbprint -ne $cert.Thumbprint) { throw 'Installed uninstaller signature mismatch' }
+          Write-Host "Rebuilt uninstaller: $($after.Status)"
