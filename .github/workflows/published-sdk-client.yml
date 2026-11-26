@@ -1,0 +1,33 @@
+name: Published SDK client compatibility
+on:
+  push:
+    branches: [validation/published-sdk-client]
+    paths: ['.github/workflows/published-sdk-client.yml', 'scripts/check-published-sdk-client.py']
+permissions:
+  contents: read
+jobs:
+  client:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2022, arch: amd64, package: windows-x64-dll.zip }
+          - { runner: ubuntu-24.04, arch: x86_64, package: linux-amd64-so.tar.gz }
+          - { runner: ubuntu-24.04-arm, arch: aarch64, package: linux-arm64-so.tar.gz }
+          - { runner: macos-15, arch: arm64, package: macos-universal-dylib.tar.gz }
+          - { runner: macos-15-intel, arch: x86_64, package: macos-universal-dylib.tar.gz }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SDK_PACKAGE: ${{ matrix.package }}
+      SDK_MACHINE: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os != 'Windows'
+        run: python3 scripts/check-published-sdk-client.py
+      - if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do call "%%i\VC\Auxiliary\Build\vcvars64.bat"
+          python scripts\check-published-sdk-client.py
