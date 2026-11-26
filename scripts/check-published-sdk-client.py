@@ -45,7 +45,7 @@ def run(root):
                    '/I' + str(old / 'include'), source, old / 'lib/ops_pointcloud.dll.lib']
     else:
         mac = sys.platform == 'darwin'
-        library = Path('lib') / ('libops_pointcloud.dylib' if mac else 'libops_pointcloud.so')
+        library = Path('lib') / ('libops_pointcloud.dylib' if mac else 'libops_pointcloud.so.1')
         command = ['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-I' + str(old / 'include'),
                    source, '-L' + str(old / 'lib'), '-lops_pointcloud',
                    '-Wl,-rpath,' + ('@loader_path' if mac else '$ORIGIN'), '-o', exe]
