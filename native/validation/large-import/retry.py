@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import time
@@ -136,8 +137,8 @@ def check(binary, scan, expected_points, folder, timeout, budget):
         if changes < 1000:
             raise RuntimeError(f"Only {changes} viewport pixels changed after rotation")
         result.update(changed_pixels=changes, peak_rss_through_render_kib=peak_rss_kib())
-        before.replace(proof/"initial.png")
-        after.replace(proof/"rotated.png")
+        shutil.copyfile(before, proof/"initial.png")
+        shutil.copyfile(after, proof/"rotated.png")
         return result
     finally:
         desktop.terminate()
