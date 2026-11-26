@@ -41,6 +41,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Content result.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: windows-large-import-result
-          path: result.json
+          path: |
+            result.json
+            proof/*.png

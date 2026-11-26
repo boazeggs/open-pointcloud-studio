@@ -88,6 +88,8 @@ def check(binary, scan, expected_points, folder, timeout):
 
         camera = final["camera"]
         before, after = folder / "initial.png", folder / "rotated.png"
+        print(json.dumps(result), file=sys.stderr)
+        print(json.dumps({"camera":camera,"layer":{k:layer.get(k) for k in ["bounds","view_sample","points","indexed"]}}), file=sys.stderr)
         api("screenshot", path=str(before), base64=False, max_edge=1024)
         api("set_camera", yaw=camera["yaw"] + 0.3, pitch=camera["pitch"],
             zoom=camera["zoom"], pan=camera["pan"])
@@ -99,6 +101,13 @@ def check(binary, scan, expected_points, folder, timeout):
             changes = sum(count for count, rgb in delta.getcolors(delta.width * delta.height)
                           if max(rgb) > 10)
         if changes < 1000:
+            print("First two captures matched below threshold",changes,file=sys.stderr)
+            from PIL import ImageGrab
+            for n in range(4):
+                time.sleep(2)
+                api("screenshot", path=str(folder/f"delayed-{n}.png"), base64=False, max_edge=1024)
+                print("Frame", n, api("status")["result"]["camera"], file=sys.stderr)
+            ImageGrab.grab().save(folder / "screen.png")
             raise RuntimeError(f"Only {changes} viewport pixels changed after rotation")
         result.update(changed_pixels=changes, peak_rss_through_render_kib=peak_rss_kib())
         return result
@@ -119,6 +128,7 @@ if __name__ == "__main__":
     parser.add_argument("expected_points", type=int, help="known source count, independently of Studio")
     parser.add_argument("--timeout", type=float, default=180, help="seconds per stage")
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix="ops-large-import-") as scratch:
-        print(json.dumps(check(args.binary.resolve(strict=True), args.scan.resolve(strict=True),
-                               args.expected_points, Path(scratch), args.timeout), indent=2))
+    folder = Path("proof").resolve()
+    folder.mkdir(exist_ok=True)
+    print(json.dumps(check(args.binary.resolve(strict=True), args.scan.resolve(strict=True),
+                           args.expected_points, folder, args.timeout), indent=2))
