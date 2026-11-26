@@ -1,8 +1,8 @@
-name: Published Windows large scan
+name: Windows viewport budget field
 on:
   push:
-    branches: [validation/windows-large-import]
-permissions: {contents: read}
+    branches: [validation/windows-budget-field]
+permissions: {contents: read, actions: read}
 jobs:
   open:
     runs-on: windows-latest
@@ -19,21 +19,15 @@ jobs:
           Get-CimInstance Win32_Processor | Select-Object Name,NumberOfLogicalProcessors | Format-List
           Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | Format-List
           Get-PhysicalDisk | Select-Object MediaType, FriendlyName | Format-List
-      - name: Download official Windows package and verify the checksum
+      - name: Download PR 81 Windows build
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          archive=open-pointcloud-studio_2026.48.0_windows-x64.zip
-          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$archive" -p SHA256SUMS
-          awk -v name="$archive" '$2 == name {print; found=1} END {exit !found}' SHA256SUMS > expected.sha256
-          sha256sum -c expected.sha256
-          unzip -q "$archive" -d package
+        run: gh run download 45741551469 -R OpenAEC-Foundation/open-pointcloud-studio -n open-pointcloud-studio-windows -D package
       - name: Generate and exercise the 500 million point scan
         shell: pwsh
         run: |
-          python -m pip install Pillow numpy
+          python -m pip install Pillow numpy pyautogui
           python native/validation/large-import/grid.py grid.ply
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $binary=(Get-ChildItem -Recurse package -Filter open-pointcloud-studio.exe).FullName
@@ -44,4 +38,6 @@ jobs:
         if: always()
         with:
           name: windows-large-import-result
-          path: result.json
+          path: |
+            result.json
+            proof/*.png

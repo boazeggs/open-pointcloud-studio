@@ -60,7 +60,52 @@ def check(binary, scan, expected_points, folder, timeout, budget):
             return int(next(line for line in lines if line.startswith("VmHWM:")).split()[1])
 
         api("set_auto_index", enabled=False)
-        api("set_budget", points=budget)
+        # Use native input for the point budget and the API as the independent
+        # read-back. The test's foreground window is kept within mouse reach
+        # on the runner's 1024-by-768 screen.
+        import ctypes
+        from ctypes import wintypes
+        import pyautogui
+        from PIL import ImageGrab
+        ui = ctypes.WinDLL("user32", use_last_error=True)
+        ui.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        ui.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
+        hwnd = int(subprocess.check_output(["powershell.exe","-NoProfile","-Command",
+                    f"(Get-Process -Id {desktop.pid}).MainWindowHandle.ToInt64()"], text=True))
+        assert hwnd and ui.SetWindowPos(hwnd, 0, -400, 0, 1440, 900, 0x40)
+        api("set_language", language="en")
+        api("set_ribbon_tab", tab="view")
+        time.sleep(1)
+        proof=Path("proof").resolve()
+        proof.mkdir(exist_ok=True)
+        snap=api("screenshot", window=True, path=str(proof/"panel.png"), max_edge=2048, base64=False)
+        scale=snap["scale_factor"]
+        x=round(snap["width"]-312*scale)
+        y=round(616*scale)
+        with Image.open(proof/"panel.png") as panel:
+            # Locate the top border of the 74 logical pixel input, allowing
+            # for native font height differences.
+            px=panel.convert("RGB")
+            offsets=sorted(range(-45,46),key=abs)
+            for dy in offsets:
+                top=y+dy
+                inner=px.getpixel((x,top+3))
+                edge=px.getpixel((x,top))
+                if min(inner)-min(edge)>12 and all(px.getpixel((x+k,top))==edge for k in range(-25,26)) and px.getpixel((x-44,top))!=edge and px.getpixel((x+48,top))!=edge:
+                    y=top+9
+                    break
+        pos=wintypes.POINT(x,y)
+        assert ui.ClientToScreen(hwnd,ctypes.byref(pos))
+        print("Screenshot size/field click", snap["width"],snap["height"],x,y,pos.x,pos.y,file=sys.stderr)
+        pyautogui.click(pos.x,pos.y)
+        pyautogui.hotkey("ctrl","a")
+        pyautogui.write(str(budget),interval=.08)
+        assert api("status")["result"]["budget"]==250000
+        pyautogui.press("enter")
+        wait_for("exact budget after keyboard entry", lambda state: state["budget"]==budget)
+        ImageGrab.grab().save(proof/"typed.png")
+        api("set_ribbon_tab", tab="start")
         start = time.monotonic()
         api("open", path=str(scan))
         preview = wait_for("a preview during import", lambda s: s["imports"] and s["clouds"]
@@ -102,6 +147,8 @@ def check(binary, scan, expected_points, folder, timeout, budget):
         if changes < 1000:
             raise RuntimeError(f"Only {changes} viewport pixels changed after rotation")
         result.update(changed_pixels=changes, peak_rss_through_render_kib=peak_rss_kib())
+        before.replace(proof/"initial.png")
+        after.replace(proof/"rotated.png")
         return result
     finally:
         desktop.terminate()
