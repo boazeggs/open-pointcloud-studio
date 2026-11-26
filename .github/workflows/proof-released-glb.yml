@@ -1,0 +1,40 @@
+name: Published GLB mesh export
+on:
+  push:
+    branches: [validation/released-glb-platforms]
+permissions: {contents: read}
+jobs:
+  export:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            archive: windows-x64.zip
+            binary: open-pointcloud-studio.exe
+          - os: macos-latest
+            archive: macos-universal.tar.gz
+            binary: open-pointcloud-studio
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify the published archive and export a coloured survey triangle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: open-pointcloud-studio_2026.48.0_${{ matrix.archive }}
+          BINARY: ${{ matrix.binary }}
+        run: |
+          set -euo pipefail
+          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$ARCHIVE" -p SHA256SUMS
+          python -c 'from pathlib import Path; import sys,hashlib; p=Path(sys.argv[1]); sums=dict(line.split(maxsplit=1)[::-1] for line in Path("SHA256SUMS").read_text().splitlines() if line.strip()); assert hashlib.sha256(p.read_bytes()).hexdigest()==sums[p.name]' "$ARCHIVE"
+          mkdir package
+          case "$ARCHIVE" in
+            *.zip) unzip -q "$ARCHIVE" -d package ;;
+            *.gz) tar -xzf "$ARCHIVE" -C package ;;
+          esac
+          bin=$(find package -type f -name "$BINARY" -print -quit)
+          test -n "$bin"
+          "$bin" --version
+          python native/validation/glb-platform/check.py "$bin"
