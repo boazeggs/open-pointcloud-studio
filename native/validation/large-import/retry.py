@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 from PIL import Image, ImageChops
 
 
-def check(binary, scan, expected_points, folder, timeout):
+def check(binary, scan, expected_points, folder, timeout, budget):
     profile = folder / "config"
     environment = dict(os.environ, XDG_CONFIG_HOME=str(profile),
                        XDG_CACHE_HOME=str(folder / "cache"), OPS_INDEX_DIR=str(folder / "indexes"),
@@ -60,20 +60,13 @@ def check(binary, scan, expected_points, folder, timeout):
             return int(next(line for line in lines if line.startswith("VmHWM:")).split()[1])
 
         api("set_auto_index", enabled=False)
-        api("set_budget", points=int(os.environ["TEST_BUDGET"]))
-        from PIL import ImageGrab
-        def inspect_screen(name):
-            try:
-                ImageGrab.grab().save(folder / f"{name}-os.png")
-            except OSError as err:
-                print(f"Screen capture: {err}", file=sys.stderr)
-        inspect_screen("empty")
-        api("screenshot", path=str(folder / "empty.png"), window=True, base64=False, max_edge=1024)
+        api("set_budget", points=budget)
         start = time.monotonic()
         api("open", path=str(scan))
         preview = wait_for("a preview during import", lambda s: s["imports"] and s["clouds"]
                            and s["clouds"][0]["view_sample"] > 0)
         result = {"version": version, "scan": scan.name, "bytes": scan.stat().st_size,
+                  "requested_point_budget": budget,
                   "initial_preview_seconds": time.monotonic() - start,
                   "preview_points_before_cancel": preview["clouds"][0]["view_sample"]}
         start = time.monotonic()
@@ -94,12 +87,8 @@ def check(binary, scan, expected_points, folder, timeout):
             raise RuntimeError(f"Unexpected reopened layer: {layer}")
         result.update(source_points=layer["points"], view_sample_points=layer["view_sample"])
 
-        inspect_screen("opened")
         camera = final["camera"]
         before, after = folder / "initial.png", folder / "rotated.png"
-        result["requested_point_budget"] = int(os.environ["TEST_BUDGET"])
-        print(json.dumps(result), file=sys.stderr)
-        print(json.dumps({"camera":camera,"layer":{k:layer.get(k) for k in ["bounds","view_sample","points","indexed"]}}), file=sys.stderr)
         api("screenshot", path=str(before), base64=False, max_edge=1024)
         api("set_camera", yaw=camera["yaw"] + 0.3, pitch=camera["pitch"],
             zoom=camera["zoom"], pan=camera["pan"])
@@ -110,10 +99,7 @@ def check(binary, scan, expected_points, folder, timeout):
             delta = ImageChops.difference(first.convert("RGB"), second.convert("RGB"))
             changes = sum(count for count, rgb in delta.getcolors(delta.width * delta.height)
                           if max(rgb) > 10)
-        inspect_screen("rotated")
-        api("screenshot", path=str(folder / "full.png"), window=True, base64=False, max_edge=1024)
         if changes < 1000:
-            print("First two captures matched below threshold",changes,file=sys.stderr)
             raise RuntimeError(f"Only {changes} viewport pixels changed after rotation")
         result.update(changed_pixels=changes, peak_rss_through_render_kib=peak_rss_kib())
         return result
@@ -133,8 +119,8 @@ if __name__ == "__main__":
     parser.add_argument("scan", type=Path)
     parser.add_argument("expected_points", type=int, help="known source count, independently of Studio")
     parser.add_argument("--timeout", type=float, default=180, help="seconds per stage")
+    parser.add_argument("--budget", type=int, default=1_000_000, help="requested viewport point budget")
     args = parser.parse_args()
-    folder = Path("proof",os.environ["TEST_BUDGET"]).resolve()
-    folder.mkdir(parents=True, exist_ok=True)
-    print(json.dumps(check(args.binary.resolve(strict=True), args.scan.resolve(strict=True),
-                           args.expected_points, folder, args.timeout), indent=2))
+    with tempfile.TemporaryDirectory(prefix="ops-large-import-") as scratch:
+        print(json.dumps(check(args.binary.resolve(strict=True), args.scan.resolve(strict=True),
+                               args.expected_points, Path(scratch), args.timeout, args.budget), indent=2))

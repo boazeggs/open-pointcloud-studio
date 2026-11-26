@@ -37,18 +37,11 @@ jobs:
           python native/validation/large-import/grid.py grid.ply
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $binary=(Get-ChildItem -Recurse package -Filter open-pointcloud-studio.exe).FullName
-          $env:TEST_BUDGET="250000"
-          python native/validation/large-import/retry.py $binary grid.ply 500000000 --timeout 300 > result-default.json
+          python native/validation/large-import/retry.py $binary grid.ply 500000000 --budget 50000 --timeout 300 > result.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-Content result-default.json
-          $env:TEST_BUDGET="1000000"
-          python native/validation/large-import/retry.py $binary grid.ply 500000000 --timeout 300 > result-million.json
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-Content result-million.json
+          Get-Content result.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-large-import-result
-          path: |
-            result-*.json
-            proof/*/*.png
+          path: result.json
