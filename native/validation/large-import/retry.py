@@ -60,7 +60,7 @@ def check(binary, scan, expected_points, folder, timeout):
             return int(next(line for line in lines if line.startswith("VmHWM:")).split()[1])
 
         api("set_auto_index", enabled=False)
-        api("set_budget", points=50_000)
+        api("set_budget", points=int(os.environ["TEST_BUDGET"]))
         from PIL import ImageGrab
         def inspect_screen(name):
             try:
@@ -97,6 +97,7 @@ def check(binary, scan, expected_points, folder, timeout):
         inspect_screen("opened")
         camera = final["camera"]
         before, after = folder / "initial.png", folder / "rotated.png"
+        result["requested_point_budget"] = int(os.environ["TEST_BUDGET"])
         print(json.dumps(result), file=sys.stderr)
         print(json.dumps({"camera":camera,"layer":{k:layer.get(k) for k in ["bounds","view_sample","points","indexed"]}}), file=sys.stderr)
         api("screenshot", path=str(before), base64=False, max_edge=1024)
@@ -113,12 +114,6 @@ def check(binary, scan, expected_points, folder, timeout):
         api("screenshot", path=str(folder / "full.png"), window=True, base64=False, max_edge=1024)
         if changes < 1000:
             print("First two captures matched below threshold",changes,file=sys.stderr)
-            from PIL import ImageGrab
-            for n in range(4):
-                time.sleep(2)
-                api("screenshot", path=str(folder/f"delayed-{n}.png"), base64=False, max_edge=1024)
-                print("Frame", n, api("status")["result"]["camera"], file=sys.stderr)
-            ImageGrab.grab().save(folder / "screen.png")
             raise RuntimeError(f"Only {changes} viewport pixels changed after rotation")
         result.update(changed_pixels=changes, peak_rss_through_render_kib=peak_rss_kib())
         return result
@@ -139,7 +134,7 @@ if __name__ == "__main__":
     parser.add_argument("expected_points", type=int, help="known source count, independently of Studio")
     parser.add_argument("--timeout", type=float, default=180, help="seconds per stage")
     args = parser.parse_args()
-    folder = Path("proof").resolve()
-    folder.mkdir(exist_ok=True)
+    folder = Path("proof",os.environ["TEST_BUDGET"]).resolve()
+    folder.mkdir(parents=True, exist_ok=True)
     print(json.dumps(check(args.binary.resolve(strict=True), args.scan.resolve(strict=True),
                            args.expected_points, folder, args.timeout), indent=2))
