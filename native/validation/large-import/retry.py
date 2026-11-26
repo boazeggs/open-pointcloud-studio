@@ -60,7 +60,15 @@ def check(binary, scan, expected_points, folder, timeout):
             return int(next(line for line in lines if line.startswith("VmHWM:")).split()[1])
 
         api("set_auto_index", enabled=False)
-        api("set_budget", points=1_000_000)
+        api("set_budget", points=50_000)
+        from PIL import ImageGrab
+        def inspect_screen(name):
+            try:
+                ImageGrab.grab().save(folder / f"{name}-os.png")
+            except OSError as err:
+                print(f"Screen capture: {err}", file=sys.stderr)
+        inspect_screen("empty")
+        api("screenshot", path=str(folder / "empty.png"), window=True, base64=False, max_edge=1024)
         start = time.monotonic()
         api("open", path=str(scan))
         preview = wait_for("a preview during import", lambda s: s["imports"] and s["clouds"]
@@ -86,6 +94,7 @@ def check(binary, scan, expected_points, folder, timeout):
             raise RuntimeError(f"Unexpected reopened layer: {layer}")
         result.update(source_points=layer["points"], view_sample_points=layer["view_sample"])
 
+        inspect_screen("opened")
         camera = final["camera"]
         before, after = folder / "initial.png", folder / "rotated.png"
         print(json.dumps(result), file=sys.stderr)
@@ -100,6 +109,8 @@ def check(binary, scan, expected_points, folder, timeout):
             delta = ImageChops.difference(first.convert("RGB"), second.convert("RGB"))
             changes = sum(count for count, rgb in delta.getcolors(delta.width * delta.height)
                           if max(rgb) > 10)
+        inspect_screen("rotated")
+        api("screenshot", path=str(folder / "full.png"), window=True, base64=False, max_edge=1024)
         if changes < 1000:
             print("First two captures matched below threshold",changes,file=sys.stderr)
             from PIL import ImageGrab
