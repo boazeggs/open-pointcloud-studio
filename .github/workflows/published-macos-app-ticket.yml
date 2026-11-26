@@ -1,0 +1,50 @@
+name: Verify both tickets from published macOS downloads
+on:
+  push:
+    branches: [validation/published-macos-app-ticket]
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-26-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      NUMBER: 2026.48.0
+      MACOS_SIGNED: 'true'
+      SDK_MACOS_SIGNED: 'true'
+      PART: macos-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the three assets and check their signed release hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir assets
+          cd assets
+          gh release download v2026.48.0 --repo OpenAEC-Foundation/open-pointcloud-studio \
+            --pattern '*_macos-universal.dmg' --pattern '*_macos-universal.tar.gz' --pattern '*_macos-universal-dylib.tar.gz'
+          shasum -a 256 -c ../.github/workflows/published-macos-app-ticket.sha256
+      - name: Use the release workflow's Intel ticket-service network setting
+        if: matrix.arch == 'x86_64'
+        run: |
+          echo "block return out quick proto udp from any to any port 443" | sudo pfctl -f -
+          sudo pfctl -E
+      - name: Run the published-release verifier
+        run: |
+          mkdir evidence
+          bash native/packaging/macos/verify-published.sh "$PWD/assets" "$NUMBER" "$PWD/evidence/$PART.md"
+          grep -E 'validate-ticket\.sh .+\.dmg` \(exit 0\)' "evidence/$PART.md"
+          grep -E 'validate-ticket\.sh .+\.app` \(exit 0\)' "evidence/$PART.md"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-${{ matrix.arch }}
+          path: evidence
