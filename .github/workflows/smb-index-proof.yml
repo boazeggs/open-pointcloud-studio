@@ -1,0 +1,94 @@
+name: Index a local scan on SMB and reopen after reconnect
+on:
+  push:
+    branches: [validation/smb-index-86]
+    paths: ['.github/workflows/smb-index-proof.yml', 'scripts/check-smb-index.py']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  smb:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, platform: linux }
+          - { os: windows-2022, platform: windows }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          repository: OpenAEC-Foundation/open-pointcloud-studio
+          github-token: ${{ github.token }}
+          run-id: 45790779782
+          name: open-pointcloud-studio-${{ matrix.platform }}
+          path: bin
+      - name: Reconnect a Linux kernel CIFS mount to Samba
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -eu
+          sudo systemctl mask smbd nmbd samba-ad-dc
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends samba cifs-utils
+          base="$RUNNER_TEMP/smb-proof"
+          mkdir -p "$base"/{server,mounted,local}
+          cat >"$base/smb.conf" <<EOF
+          [global]
+            interfaces = 127.0.0.1
+            bind interfaces only = yes
+            server min protocol = SMB3
+            disable netbios = yes
+            load printers = no
+            disable spoolss = yes
+          [indexproof]
+            path = $base/server
+            valid users = $(id -un)
+            read only = no
+          EOF
+          umask 077
+          password=$(openssl rand -hex 24)
+          printf '%s\n%s\n' "$password" "$password" | sudo smbpasswd -s -a "$(id -un)"
+          printf 'username=%s\npassword=%s\n' "$(id -un)" "$password" >"$base/credentials"
+          sudo smbd --configfile="$base/smb.conf"
+          mount_share() {
+            sudo mount -t cifs //127.0.0.1/indexproof "$base/mounted" -o "credentials=$base/credentials,uid=$(id -u),gid=$(id -g),vers=3.1.1,cache=none,actimeo=0"
+          }
+          trap 'sudo umount "$base/mounted" 2>/dev/null || true; rm -f "$base/credentials"' EXIT
+          chmod +x bin/open-pointcloud-studio
+          mount_share
+          findmnt -T "$base/mounted" -n -o SOURCE,FSTYPE
+          python3 scripts/check-smb-index.py build "$PWD/bin/open-pointcloud-studio" "$base/mounted" "$base/server" "$base/local"
+          sudo umount "$base/mounted"
+          mount_share
+          python3 scripts/check-smb-index.py reopen "$PWD/bin/open-pointcloud-studio" "$base/mounted" "$base/server" "$base/local"
+      - name: Reconnect a Windows SMB share
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = Join-Path $env:RUNNER_TEMP 'smb-proof'
+          $server = New-Item -ItemType Directory -Force "$base/server"
+          $account = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $share = 'indexproof'
+          $mount = "\\localhost\$share"
+          $exe = (Resolve-Path bin/open-pointcloud-studio.exe).Path
+          try {
+            foreach ($phase in 'build','reopen') {
+              New-SmbShare -Name $share -Path $server.FullName -FullAccess $account -CachingMode None | Out-Null
+              python scripts/check-smb-index.py $phase $exe $mount $server.FullName "$base/local"
+              if ($LASTEXITCODE -ne 0) { throw "Index verification failed during $phase" }
+              Get-SmbConnection | Where-Object ShareName -eq $share | Format-Table ServerName,ShareName,Dialect
+              Remove-SmbShare -Name $share -Force
+            }
+          } finally {
+            if (Get-SmbShare -Name $share -ErrorAction SilentlyContinue) { Remove-SmbShare -Name $share -Force }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smb-index-${{ matrix.platform }}
+          path: ${{ runner.temp }}/smb-proof/local/smb-leaves.json
