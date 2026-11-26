@@ -1,0 +1,24 @@
+name: Published macOS wizard cancellation
+on:
+  push:
+    branches: [validation/wizard-cancel-macos]
+permissions: {contents: read}
+jobs:
+  cancel:
+    runs-on: macos-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test ten cancellations and a subsequent completed job in the published desktop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive=open-pointcloud-studio_2026.48.0_macos-universal.tar.gz
+          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$archive" -p SHA256SUMS
+          python3 -c 'from pathlib import Path; import sys,hashlib; p=Path(sys.argv[1]); sums=dict(line.split(maxsplit=1)[::-1] for line in Path("SHA256SUMS").read_text().splitlines() if line.strip()); assert hashlib.sha256(p.read_bytes()).hexdigest()==sums[p.name]' "$archive"
+          mkdir package
+          tar -xzf "$archive" -C package
+          binary=$(find package -type f -name open-pointcloud-studio -print -quit)
+          "$binary" --version
+          python3 native/validation/wizard-cancel/probe.py "$binary"
