@@ -83,18 +83,6 @@ def check(binary, scan, expected_points, folder, timeout, budget):
         scale=snap["scale_factor"]
         x=round(snap["width"]-312*scale)
         y=round(616*scale)
-        with Image.open(proof/"panel.png") as panel:
-            # Locate the top border of the 74 logical pixel input, allowing
-            # for native font height differences.
-            px=panel.convert("RGB")
-            offsets=sorted(range(-45,46),key=abs)
-            for dy in offsets:
-                top=y+dy
-                inner=px.getpixel((x,top+3))
-                edge=px.getpixel((x,top))
-                if min(inner)-min(edge)>12 and all(px.getpixel((x+k,top))==edge for k in range(-25,26)) and px.getpixel((x-44,top))!=edge and px.getpixel((x+48,top))!=edge:
-                    y=top+9
-                    break
         pos=wintypes.POINT(x,y)
         assert ui.ClientToScreen(hwnd,ctypes.byref(pos))
         print("Screenshot size/field click", snap["width"],snap["height"],x,y,pos.x,pos.y,file=sys.stderr)
@@ -103,7 +91,8 @@ def check(binary, scan, expected_points, folder, timeout, budget):
         pyautogui.write(str(budget),interval=.08)
         assert api("status")["result"]["budget"]==250000
         pyautogui.press("enter")
-        wait_for("exact budget after keyboard entry", lambda state: state["budget"]==budget)
+        time.sleep(.5)
+        assert api("status")["result"]["budget"]==budget, "typed count did not apply"
         ImageGrab.grab().save(proof/"typed.png")
         api("set_ribbon_tab", tab="start")
         start = time.monotonic()
