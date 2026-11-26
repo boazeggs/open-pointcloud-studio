@@ -1,0 +1,46 @@
+name: Published Windows large scan
+on:
+  push:
+    branches: [validation/windows-large-import]
+permissions: {contents: read}
+jobs:
+  open:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Record runner hardware and operating system
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,TotalVisibleMemorySize
+          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfLogicalProcessors | Format-List
+          Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion | Format-List
+          Get-PhysicalDisk | Select-Object MediaType, FriendlyName | Format-List
+      - name: Download official Windows package and verify the checksum
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive=open-pointcloud-studio_2026.48.0_windows-x64.zip
+          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$archive" -p SHA256SUMS
+          awk -v name="$archive" '$2 == name {print; found=1} END {exit !found}' SHA256SUMS > expected.sha256
+          sha256sum -c expected.sha256
+          unzip -q "$archive" -d package
+      - name: Generate and exercise the 500 million point scan
+        shell: pwsh
+        run: |
+          python -m pip install Pillow numpy
+          python native/validation/large-import/grid.py grid.ply
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $binary=(Get-ChildItem -Recurse package -Filter open-pointcloud-studio.exe).FullName
+          python native/validation/large-import/retry.py $binary grid.ply 500000000 --timeout 300 > result.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Content result.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-large-import-result
+          path: result.json

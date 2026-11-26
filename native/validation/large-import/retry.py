@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise cancellation and reopening of a large scan in a Linux desktop session."""
+"""Exercise cancellation and reopening of a large scan in a Linux or Windows desktop session."""
 import argparse
 import json
 import os
@@ -50,6 +50,12 @@ def check(binary, scan, expected_points, folder, timeout):
                 time.sleep(0.1)
 
         def peak_rss_kib():
+            if os.name == "nt":
+                query = f"(Get-Process -Id {desktop.pid} -ErrorAction Stop).PeakWorkingSet64"
+                return int(subprocess.check_output(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", query],
+                    text=True,
+                )) // 1024
             lines = Path(f"/proc/{desktop.pid}/status").read_text().splitlines()
             return int(next(line for line in lines if line.startswith("VmHWM:")).split()[1])
 
