@@ -1,7 +1,7 @@
-name: Reopen mounted Docs versions in published Linux packages
+name: Edit a 12-million-point scan in the managed Linux releases
 on:
   push:
-    branches: [validation/managed-reopen-platforms]
+    branches: [validation/managed-large-scan]
 permissions: {contents: read}
 jobs:
   reopen:
@@ -31,14 +31,13 @@ jobs:
           sha256sum --check "$PACKAGE.sha256"
           chmod +x "$PACKAGE"
           "./$PACKAGE" --appimage-extract > /dev/null
-      - name: Save, deliver and reopen successive versions at the same path
+      - name: Edit, save and reopen a 12-million-point scan
         run: |
-          bash native/packaging/managed-wayland-smoke.sh squashfs-root/AppRun proof/active
-          bash native/packaging/managed-wayland-smoke.sh squashfs-root/AppRun proof/paused --paused-access
+          LARGE_MANAGED_SCAN=1 bash native/packaging/managed-wayland-smoke.sh squashfs-root/AppRun proof/active
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mounted-versions-${{ matrix.arch }}
+          name: large-managed-scan-${{ matrix.arch }}
           path: |
             proof/*/result.json
-            proof/*/*.png
+            proof/*/window.log

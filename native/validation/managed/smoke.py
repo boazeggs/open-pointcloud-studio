@@ -155,7 +155,11 @@ with tempfile.TemporaryDirectory(prefix="ops-managed-") as directory:
             open_save_points = 0
             staged_points = []
             reopened_points = []
-            if args.paused_access:
+            large_result = None
+            if os.environ.get("LARGE_MANAGED_SCAN"):
+                from large_scan import verify_large_scan
+                large_result = verify_large_scan(work, tool, save_to, xyz_coordinates)
+            elif args.paused_access:
                 blocked = rpc("tools/call", {"name": "pointcloud_stand", "arguments": {}})
                 assert blocked.get("isError") and "paused" in str(blocked), blocked
                 assert request("GET", "/gezond")[0] == 200, "Pausing MCP must not make a healthy GUI look crashed"
@@ -205,7 +209,7 @@ with tempfile.TemporaryDirectory(prefix="ops-managed-") as directory:
             assert window.wait(timeout=30) == 0
             assert request("GET", "/gezond")[0] == 503
             report = {"ok": True, "server": initialized["serverInfo"], "tool_count": len(definitions),
-                      "open_save_points": open_save_points, "staged_version_points": staged_points,
+                      "large_scan": large_result, "open_save_points": open_save_points, "staged_version_points": staged_points,
                       "reopened_version_points": reopened_points, "mcp_paused": args.paused_access, "idle_rss_kib": idle_rss_kib, "unauthenticated_status": 401, "origin_status": 403,
                       "health_after_window_exit": 503, "sigterm_exit": 0}
             (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
