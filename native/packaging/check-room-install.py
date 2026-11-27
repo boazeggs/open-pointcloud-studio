@@ -25,6 +25,7 @@ def main():
     profile = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     environment = {**os.environ, "XDG_CONFIG_HOME": str(Path(profile.name)/"config"),
                    "XDG_CACHE_HOME": str(Path(profile.name)/"cache")}
+    print("Starting the installed MCP server", flush=True)
     server = gui["Server"](str(args.binary), environment)
     window = None
     try:
@@ -32,6 +33,7 @@ def main():
                                  "clientInfo": {"name": "installed-room-scan", "version": "1"}, "capabilities": {}})
         assert started["serverInfo"]["version"] == "2026.48.0"
         server.notify("notifications/initialized")
+        print("Opening the scan in the desktop viewer", flush=True)
         window = server.tool("start_instance", files=[str(scan)])["started"]["pid"]
         for _ in range(120):
             clouds = server.tool("status")["result"]["clouds"]
@@ -40,6 +42,7 @@ def main():
             time.sleep(.25)
         else:
             raise RuntimeError("Room scan did not open")
+        print("Loaded", POINTS, "points", flush=True)
         server.tool("zoom_all")
         server.tool("set_point_size", size=3)
         images = []

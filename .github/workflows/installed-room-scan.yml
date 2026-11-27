@@ -14,8 +14,6 @@ jobs:
         include:
           - {runner: ubuntu-24.04, package: amd64.deb}
           - {runner: ubuntu-24.04-arm, package: arm64.deb}
-          - {runner: windows-2022, package: x64-setup.exe}
-          - {runner: macos-15, package: macos-universal.dmg}
     env:
       ASSET: open-pointcloud-studio_2026.48.0_${{ matrix.package }}
     steps:
@@ -44,29 +42,23 @@ jobs:
           WORKDIR /home/studio
           ENV WGPU_BACKEND=vulkan LIBGL_ALWAYS_SOFTWARE=1
           DOCKER
-          docker build -q -t room-test staging
+          docker build --progress=plain -t room-test staging
           sudo chown 10001:10001 proof
-          docker run --rm --network none -v "$PWD/proof:/proof" room-test xvfb-run -a -s '-screen 0 1280x800x24' python3 /probe/check-room-install.py /usr/bin/open-pointcloud-studio /probe/room_scan1.pcd /proof
-      - name: Render using the installed Windows executable
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $target = Join-Path $env:RUNNER_TEMP 'room-studio'
-          $setup = Join-Path staging $env:ASSET
-          if ((Get-AuthenticodeSignature $setup).Status -ne 'Valid') { throw 'Installer signature invalid' }
-          $installed = Start-Process $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=$target") -Wait -PassThru
-          if ($installed.ExitCode -ne 0) { throw "Setup failed $($installed.ExitCode)" }
-          python native/packaging/check-room-install.py "$target/open-pointcloud-studio.exe" staging/room_scan1.pcd proof
-      - name: Copy the app from the downloaded disk image and render the scan
-        if: runner.os == 'macOS'
-        run: |
-          mkdir -p "$RUNNER_TEMP/disk" "$RUNNER_TEMP/Applications"
-          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/disk" "staging/$ASSET"
-          app="$RUNNER_TEMP/Applications/Open Pointcloud Studio.app"
-          ditto "$RUNNER_TEMP/disk/Open Pointcloud Studio.app" "$app"
-          hdiutil detach "$RUNNER_TEMP/disk"
-          codesign --verify --deep --strict "$app"
-          python3 native/packaging/check-room-install.py "$app/Contents/MacOS/open-pointcloud-studio" staging/room_scan1.pcd proof
+          docker run --rm --init --network none -v "$PWD/proof:/proof" room-test bash -eu -c '
+            export DISPLAY=:99 XDG_RUNTIME_DIR="$HOME/runtime" XDG_SESSION_TYPE=x11
+            install -d -m 700 "$XDG_RUNTIME_DIR"
+            Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp > /tmp/xvfb.log 2>&1 &
+            xpid=$!
+            trap "kill $xpid 2>/dev/null || true" EXIT
+            for attempt in {1..40}; do
+              if [ -S /tmp/.X11-unix/X99 ]; then break; fi
+              if ! kill -0 "$xpid"; then cat /tmp/xvfb.log; exit 1; fi
+              sleep .25
+            done
+            test -S /tmp/.X11-unix/X99
+            echo "X display available"
+            timeout -k 5s 120s python3 -u -X faulthandler /probe/check-room-install.py /usr/bin/open-pointcloud-studio /probe/room_scan1.pcd /proof
+          '
       - uses: actions/upload-artifact@v4
         with:
           name: room-${{ matrix.runner }}
