@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise a managed native window and its real desktop MCP HTTP transport."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -83,8 +84,13 @@ with tempfile.TemporaryDirectory(prefix="ops-managed-") as directory:
     directory = Path(directory)
     work = directory / "files"
     work.mkdir()
-    source = work / "sample.xyz"
+    source = work / "Bâtiment noord – étage 2.xyz"
     source.write_text("".join(f"{x/10} {y/10} {z/10}\n" for x in range(10) for y in range(10) for z in range(10)))
+    source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    prefs = directory / "config/open-pointcloud-studio-native"
+    prefs.mkdir(parents=True)
+    (prefs / "language").write_text("nl")
+    (prefs / "theme").write_text("blueprint")
     env = {**os.environ, "XDG_CONFIG_HOME": str(directory / "config"),
            "XDG_CACHE_HOME": str(directory / "cache"), "OPENAEC_BEHEERD": "1",
            "OPENAEC_MAP": str(work), "OPENAEC_TAAL": "en", "OPENAEC_THEMA": "dark",
@@ -92,7 +98,6 @@ with tempfile.TemporaryDirectory(prefix="ops-managed-") as directory:
            "OPENAEC_MCP_ADRES": "127.0.0.1"}
     if args.paused_access:
         settings = directory / "config/open-pointcloud-studio-native/settings.json"
-        settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({"mcp_enabled": False}))
     window = bridge = None
     with (args.output / "window.log").open("w") as window_log, (args.output / "http.log").open("w") as http_log:
@@ -134,7 +139,7 @@ with tempfile.TemporaryDirectory(prefix="ops-managed-") as directory:
                 tool("wait_until_idle", timeout_seconds=60)
                 status = tool("stand")["result"]
                 assert status["managed"] == {"enabled": True, "directory": str(work)}
-                assert status["language"] == "en"
+                assert (status["language"], status["theme"]) == ("en", "openaec")
                 assert status["clouds"][0]["points"] == 1000
                 destination = work / "saved.ply"
                 exported = tool("opslaan", path=str(destination))
@@ -147,6 +152,39 @@ with tempfile.TemporaryDirectory(prefix="ops-managed-") as directory:
             window.send_signal(signal.SIGTERM)
             assert window.wait(timeout=30) == 0
             assert request("GET", "/gezond")[0] == 503
+            if not args.paused_access:
+                assert (prefs / "language").read_text() == "nl"
+                assert (prefs / "theme").read_text() == "blueprint"
+                print("Managed overrides en/dark applied; saved nl/blueprint survived SIGTERM.")
+                env.pop("OPENAEC_TAAL")
+                env.pop("OPENAEC_THEMA")
+                window = subprocess.Popen([binary, "--api-port", str(api_port), str(source)],
+                                          env=env, stdout=window_log, stderr=window_log)
+                deadline = time.monotonic() + 60
+                while request("GET", "/gezond")[0] != 200:
+                    assert window.poll() is None and time.monotonic() < deadline
+                    time.sleep(.2)
+                session = None
+                rpc("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                                   "clientInfo": {"name": "managed-restart", "version": "1"}})
+                assert request("POST", "/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"})[0] == 202
+                while True:
+                    reopened = tool("stand")["result"]
+                    if reopened["clouds"]:
+                        break
+                    assert time.monotonic() < deadline
+                    time.sleep(.2)
+                assert (reopened["language"], reopened["theme"]) == ("nl", "blueprint")
+                assert reopened["managed"] == {"enabled": True, "directory": str(work)}
+                assert [(c["path"], c["points"]) for c in reopened["clouds"]] == [(str(source), 1000)]
+                tool("screenshot", path=str((args.output / "managed-restart.png").resolve()), window=True)
+                assert (args.output / "managed-restart.png").stat().st_size > 1000
+                assert request("DELETE", "/mcp")[0] == 200
+                window.terminate()
+                assert window.wait(timeout=30) == 0
+                assert request("GET", "/gezond")[0] == 503
+                assert hashlib.sha256(source.read_bytes()).hexdigest() == source_hash
+                print(f"Restart loaded {source.name} from argv, 1000 points, nl/blueprint, source SHA-256 {source_hash}.")
             report = {"ok": True, "server": initialized["serverInfo"], "tool_count": len(definitions),
                       "open_save_points": 0 if args.paused_access else 1000, "mcp_paused": args.paused_access, "idle_rss_kib": idle_rss_kib, "unauthenticated_status": 401, "origin_status": 403,
                       "health_after_window_exit": 503, "sigterm_exit": 0}
