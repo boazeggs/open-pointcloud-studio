@@ -1,0 +1,28 @@
+name: Compare entitlements in two published Mac releases
+on:
+  push:
+    branches: [validation/published-macos-entitlements]
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check public downloads against the signed release manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir downloads
+          cd downloads
+          for version in 2026.45.1 2026.48.0; do
+            gh release download "v$version" --repo OpenAEC-Foundation/open-pointcloud-studio --pattern '*_macos-universal.dmg'
+          done
+          shasum -a 256 -c ../.github/workflows/macos-entitlements.sha256
+      - name: Compare Developer ID team, hardened runtime and signed entitlements per architecture
+        run: python3 .github/workflows/macos-entitlements.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-entitlements
+          path: entitlements.json
