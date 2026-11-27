@@ -58,14 +58,23 @@ def changed_pixels(left, right, bounds):
     return sum(max(pixel) > 10 for pixel in diff.getdata())
 
 
-def exercise(server, directory, output, gui):
+def exercise(server, directory, output, gui, binary, env):
     originals, scan, panorama = fixture(directory)
     digest = hashlib.sha256(scan.read_bytes()).hexdigest()
     tool = server.tool
     init = server.request("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
                           "clientInfo": {"name": "photo-measure", "version": "1"}})
     server.notify("notifications/initialized")
-    pid = tool("start_instance", files=[str(scan)])["started"]["pid"]
+    try:
+        pid = tool("start_instance", files=[str(scan)])["started"]["pid"]
+    except gui["Failure"]:
+        # The launcher disconnects the GUI's stderr. Capture startup diagnostics
+        # from the same package when the test display cannot start a window.
+        try:
+            subprocess.run([str(binary), str(scan)], env=env, timeout=8, check=False)
+        except subprocess.TimeoutExpired:
+            pass
+        raise
     try:
         wid = pointer("search", "--sync", "--onlyvisible", "--pid", pid).splitlines()[-1]
         pointer("windowmove", wid, 0, 0, "windowsize", wid, 1600, 900, "windowfocus", wid)
@@ -132,7 +141,7 @@ def main():
                "HOME": str(root), "LANG": "C.UTF-8"}
         server = gui["Server"](str(args.binary.resolve()), env)
         try:
-            result = exercise(server, root, output, gui)
+            result = exercise(server, root, output, gui, args.binary.resolve(), env)
         finally:
             server.close()
     (output/"result.json").write_text(json.dumps(result, indent=2) + "\n")
