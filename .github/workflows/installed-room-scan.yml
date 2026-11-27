@@ -1,0 +1,74 @@
+name: Render a public room scan with the published installers
+on:
+  push:
+    branches: [validation/installed-room-scan]
+permissions:
+  contents: read
+jobs:
+  installed:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, package: amd64.deb}
+          - {runner: ubuntu-24.04-arm, package: arm64.deb}
+          - {runner: windows-2022, package: x64-setup.exe}
+          - {runner: macos-15, package: macos-universal.dmg}
+    env:
+      ASSET: open-pointcloud-studio_2026.48.0_${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the public scan and check the release package checksum
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p staging proof
+          cd staging
+          curl -fsSL --retry 3 'https://raw.githubusercontent.com/PointCloudLibrary/data/084fa0e260580cc765ded83de4ec3f495f1d6f1e/tutorials/room_scan1.pcd' -o room_scan1.pcd
+          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$ASSET" -p "$ASSET.sha256"
+          python -c 'import hashlib, pathlib, os; p=pathlib.Path(os.environ["ASSET"]); digest=hashlib.sha256(p.read_bytes()).hexdigest(); assert digest==pathlib.Path(str(p)+".sha256").read_text().split()[0]; print(p.name,digest)'
+      - name: Install on a fresh Ubuntu runtime and render without a network connection
+        if: runner.os == 'Linux'
+        run: |
+          cp native/packaging/{gui-smoke,check-room-install}.py staging/
+          cat > staging/Dockerfile <<'DOCKER'
+          FROM ubuntu:24.04
+          COPY *.deb /tmp/pointcloud.deb
+          RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/pointcloud.deb xvfb xauth mesa-vulkan-drivers python3 && rm /tmp/pointcloud.deb
+          COPY room_scan1.pcd gui-smoke.py check-room-install.py /probe/
+          RUN useradd -m -u 10001 studio
+          USER studio
+          WORKDIR /home/studio
+          ENV WGPU_BACKEND=vulkan LIBGL_ALWAYS_SOFTWARE=1
+          DOCKER
+          docker build -q -t room-test staging
+          sudo chown 10001:10001 proof
+          docker run --rm --network none -v "$PWD/proof:/proof" room-test xvfb-run -a -s '-screen 0 1280x800x24' python3 /probe/check-room-install.py /usr/bin/open-pointcloud-studio /probe/room_scan1.pcd /proof
+      - name: Render using the installed Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'room-studio'
+          $setup = Join-Path staging $env:ASSET
+          if ((Get-AuthenticodeSignature $setup).Status -ne 'Valid') { throw 'Installer signature invalid' }
+          $installed = Start-Process $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER',"/DIR=$target") -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw "Setup failed $($installed.ExitCode)" }
+          python native/packaging/check-room-install.py "$target/open-pointcloud-studio.exe" staging/room_scan1.pcd proof
+      - name: Copy the app from the downloaded disk image and render the scan
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/disk" "$RUNNER_TEMP/Applications"
+          hdiutil attach -readonly -nobrowse -mountpoint "$RUNNER_TEMP/disk" "staging/$ASSET"
+          app="$RUNNER_TEMP/Applications/Open Pointcloud Studio.app"
+          ditto "$RUNNER_TEMP/disk/Open Pointcloud Studio.app" "$app"
+          hdiutil detach "$RUNNER_TEMP/disk"
+          codesign --verify --deep --strict "$app"
+          python3 native/packaging/check-room-install.py "$app/Contents/MacOS/open-pointcloud-studio" staging/room_scan1.pcd proof
+      - uses: actions/upload-artifact@v4
+        with:
+          name: room-${{ matrix.runner }}
+          path: proof/*.png
+          if-no-files-found: error
