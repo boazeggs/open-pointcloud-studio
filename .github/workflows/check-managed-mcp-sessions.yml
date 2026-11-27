@@ -1,0 +1,33 @@
+name: Verify independent MCP desktop sessions on published Linux packages
+on:
+  push:
+    branches: [validation/managed-mcp-sessions]
+permissions:
+  contents: read
+jobs:
+  sessions:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-24.04, arch: amd64}
+          - {runner: ubuntu-24.04-arm, arch: arm64}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    env:
+      PACKAGE: open-pointcloud-studio_2026.48.0_${{ matrix.arch }}.deb
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the published desktop package and reference SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$PACKAGE" -p "$PACKAGE.sha256"
+          sha256sum --check "$PACKAGE.sha256"
+          sudo apt-get update -qq
+          sudo apt-get install -y "./$PACKAGE" xvfb xauth mesa-vulkan-drivers libegl1 libgl1-mesa-dri python3-venv
+          python3 -m venv "$RUNNER_TEMP/mcp"
+          "$RUNNER_TEMP/mcp/bin/pip" install --require-hashes -r native/packaging/mcp-client-requirements.txt
+      - name: Edit separate windows with two managed MCP clients
+        run: |
+          xvfb-run -a -s '-screen 0 1280x800x24' "$RUNNER_TEMP/mcp/bin/python" -I native/validation/managed/check-mcp-sessions.py /usr/bin/open-pointcloud-studio 2026.48.0
