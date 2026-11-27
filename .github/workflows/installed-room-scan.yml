@@ -58,6 +58,7 @@ jobs:
             test -S /tmp/.X11-unix/X99
             echo "X display available"
             timeout -k 5s 120s python3 -u -X faulthandler /probe/check-room-install.py /usr/bin/open-pointcloud-studio /probe/room_scan1.pcd /proof
+            chmod 644 /proof/room.png /proof/hidden.png
           '
       - uses: actions/upload-artifact@v4
         with:
