@@ -2,7 +2,7 @@ name: Published SDK client compatibility
 on:
   push:
     branches: [validation/published-sdk-client]
-    paths: ['.github/workflows/published-sdk-client.yml', 'scripts/check-published-sdk-client.py']
+    paths: ['.github/workflows/published-sdk-client.yml', 'scripts/check-published-sdk-client.py', 'scripts/check-sdk-error-contract.py']
 permissions:
   contents: read
 jobs:

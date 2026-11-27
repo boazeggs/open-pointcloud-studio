@@ -60,6 +60,8 @@ def run(root):
         expected = f'ops_pointcloud {version}, ABI 1.0: 1000 points read, 500 exported, 500 read through an index'
         if expected not in output or digest(exe) != executable_hash:
             raise ValueError(f'Unexpected client or library result for {version}')
+    contract = Path(__file__).with_name('check-sdk-error-contract.py')
+    subprocess.run([sys.executable, contract, new / library, VERSIONS[-1]], check=True)
     print(f'Unchanged client SHA-256 {executable_hash}', flush=True)
 
 
