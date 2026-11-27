@@ -1,0 +1,47 @@
+name: Compare a registered TLSLeAF forest scan with PDAL
+on:
+  push:
+    branches: [validation/tlsleaf-ptx]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: OpenAEC-Foundation/open-pointcloud-studio
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the TLSLeAF scan and the published and PR executables
+        run: |
+          mkdir data release pr
+          curl -fLSs --retry 3 'https://drive.usercontent.google.com/download?id=1Ov7vWFr9DxS59xYAPCWN9JeRHHdD3lP9&export=download&confirm=t' -o data/forest.ptx
+          echo 'a0d8fa08bd6cd594a4432d4effced5c270e606bda73b977b10063e85bfaf0920  data/forest.ptx' | sha256sum -c -
+          archive=open-pointcloud-studio_2026.48.0_linux-amd64.tar.gz
+          gh release download v2026.48.0 -R "$REPO" -p "$archive" -p "$archive.sha256"
+          sha256sum -c "$archive.sha256"
+          tar -xf "$archive" --strip-components=1 -C release
+          gh api "repos/$REPO/actions/artifacts/15138238255/zip" > pr.zip
+          echo '55c2542df433140afad091e17ae17bbf44648d8a9712d6172486df066c43079a  pr.zip' | sha256sum -c -
+          unzip -q pr.zip -d pr
+          chmod +x pr/open-pointcloud-studio
+      - name: Export the registered scan with PDAL
+        run: |
+          docker run --rm -v "$PWD/data:/data" pdal/pdal@sha256:ea111de3ccd3f593cd428a37a6dde60c8ca35ca448aae55b491e82b44467ddff pdal translate /data/forest.ptx /data/pdal.ply --readers.ptx.discard_missing_points=true --writers.ply.storage_mode=binary_little_endian --writers.ply.sized_types=false --writers.ply.dims=X,Y,Z,Red=uint8,Green=uint8,Blue=uint8
+      - name: Compare both Studio builds with PDAL
+        run: |
+          for build in release pr; do
+            "$build/open-pointcloud-studio" --export data/forest.ptx "data/$build.ply"
+            "$build/open-pointcloud-studio" --scans data/forest.ptx | tee "$build-station.txt"
+            python3 native/validation/ptx/compare_registered.py "data/$build.ply" data/pdal.ply | tee "$build.json"
+          done
+          diff -u release-station.txt pr-station.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registered-forest
+          path: |
+            *-station.txt
+            release.json
+            pr.json
