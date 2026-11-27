@@ -1,7 +1,7 @@
-name: Render a public room scan with the published installers
+name: Test the published desktop and C SDK on Ubuntu 22.04
 on:
   push:
-    branches: [validation/installed-room-scan]
+    branches: [validation/jammy-release-runtime]
 permissions:
   contents: read
 jobs:
@@ -12,10 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {runner: ubuntu-24.04, package: amd64.deb}
-          - {runner: ubuntu-24.04-arm, package: arm64.deb}
+          - {runner: ubuntu-24.04, arch: amd64}
+          - {runner: ubuntu-24.04-arm, arch: arm64}
     env:
-      ASSET: open-pointcloud-studio_2026.48.0_${{ matrix.package }}
+      ASSET: open-pointcloud-studio_2026.48.0_${{ matrix.arch }}.deb
+      SDK: open-pointcloud-studio-sdk_2026.48.0_linux-${{ matrix.arch }}-so.tar.gz
     steps:
       - uses: actions/checkout@v4
       - name: Download the public scan and check the release package checksum
@@ -26,17 +27,31 @@ jobs:
           mkdir -p staging proof
           cd staging
           curl -fsSL --retry 3 'https://raw.githubusercontent.com/PointCloudLibrary/data/084fa0e260580cc765ded83de4ec3f495f1d6f1e/tutorials/room_scan1.pcd' -o room_scan1.pcd
-          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$ASSET" -p "$ASSET.sha256"
-          python -c 'import hashlib, pathlib, os; p=pathlib.Path(os.environ["ASSET"]); digest=hashlib.sha256(p.read_bytes()).hexdigest(); assert digest==pathlib.Path(str(p)+".sha256").read_text().split()[0]; print(p.name,digest)'
+          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$ASSET" -p "$SDK" -p SHA256SUMS -p SHA256SUMS.asc -p open-pointcloud-studio-signing-key.asc
+          export GNUPGHOME="$(mktemp -d)"
+          gpg --batch --import open-pointcloud-studio-signing-key.asc
+          gpg --batch --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS > status.txt
+          awk '$2 == "VALIDSIG" && $NF == "13F6D414ADEE4ED4CD09AC60601D86C93C504D29" {found=1} END {exit !found}' status.txt
+          for asset in "$ASSET" "$SDK"; do
+            awk -v name="$asset" '$2==name {print; found=1} END {exit !found}' SHA256SUMS | sha256sum --check
+          done
+          mkdir sdk
+          tar -xzf "$SDK" -C sdk --strip-components=1
       - name: Install on a fresh Ubuntu runtime and render without a network connection
         if: runner.os == 'Linux'
         run: |
           cp native/packaging/{gui-smoke,check-room-install}.py staging/
           cat > staging/Dockerfile <<'DOCKER'
-          FROM ubuntu:24.04
+          FROM ubuntu:22.04 AS sdk-client
+          RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gcc libc6-dev
+          COPY sdk/ /sdk/
+          RUN cc -std=c11 -Wall -Wextra -Werror -I/sdk/include /sdk/examples/inspect.c -L/sdk/lib -lops_pointcloud -o /consumer
+          FROM ubuntu:22.04
           COPY *.deb /tmp/pointcloud.deb
           RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends /tmp/pointcloud.deb xvfb xauth mesa-vulkan-drivers python3 && rm /tmp/pointcloud.deb
           COPY room_scan1.pcd gui-smoke.py check-room-install.py /probe/
+          COPY --from=sdk-client /consumer /probe/sdk-client
+          COPY sdk/lib/ /probe/lib/
           RUN useradd -m -u 10001 studio
           USER studio
           WORKDIR /home/studio
@@ -44,7 +59,16 @@ jobs:
           DOCKER
           docker build --progress=plain -t room-test staging
           sudo chown 10001:10001 proof
-          docker run --rm --init --network none -v "$PWD/proof:/proof" room-test bash -eu -c '
+          docker run --rm --init --network none -v "$PWD/proof:/proof" room-test bash -euo pipefail -c '
+            . /etc/os-release
+            test "$VERSION_ID" = 22.04
+            test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.35"
+            test "$(id -u)" = 10001
+            test "$(dpkg-query -W -f="\${Version}" open-pointcloud-studio)" = 2026.48.0
+            echo "$PRETTY_NAME, $(dpkg --print-architecture), $(getconf GNU_LIBC_VERSION), UID $(id -u)"
+            mkdir sdk-work
+            LD_LIBRARY_PATH=/probe/lib /probe/sdk-client sdk-work | tee /proof/sdk.txt
+            grep -F "ops_pointcloud 2026.48.0, ABI 1.0: 1000 points read, 500 exported, 500 read through an index" /proof/sdk.txt
             export DISPLAY=:99 XDG_RUNTIME_DIR="$HOME/runtime" XDG_SESSION_TYPE=x11
             install -d -m 700 "$XDG_RUNTIME_DIR"
             Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp > /tmp/xvfb.log 2>&1 &
@@ -62,6 +86,6 @@ jobs:
           '
       - uses: actions/upload-artifact@v4
         with:
-          name: room-${{ matrix.runner }}
-          path: proof/*.png
+          name: jammy-room-${{ matrix.arch }}
+          path: proof/
           if-no-files-found: error
