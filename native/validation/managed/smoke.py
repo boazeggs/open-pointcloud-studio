@@ -123,32 +123,73 @@ with tempfile.TemporaryDirectory(prefix="ops-managed-") as directory:
                 assert blocked.get("isError") and "paused" in str(blocked), blocked
                 assert request("GET", "/gezond")[0] == 200, "Pausing MCP must not make a healthy GUI look crashed"
             else:
-                assert tool("stand")["result"]["clouds"] == []
-                tool("screenshot", path=str((args.output / "managed-empty.png").resolve()), window=True)
-                process_status = Path(f"/proc/{window.pid}/status")
-                if process_status.is_file():
-                    for line in process_status.read_text().splitlines():
-                        if line.startswith("VmRSS:"):
-                            idle_rss_kib = int(line.split()[1])
-                tool("open", path=str(source))
-                tool("wait_until_idle", timeout_seconds=60)
-                status = tool("stand")["result"]
-                assert status["managed"] == {"enabled": True, "directory": str(work)}
-                assert status["language"] == "en"
-                assert status["clouds"][0]["points"] == 1000
-                destination = work / "saved.ply"
-                exported = tool("opslaan", path=str(destination))
-                tool("wait_for_job", id=exported["job_id"], timeout_seconds=60)
-                assert destination.is_file() and destination.stat().st_size > 1000
-                tool("screenshot", path=str((args.output / "managed-window.png").resolve()), window=True)
-                assert (args.output / "managed-window.png").stat().st_size > 1000
+                from collections import Counter
+                import hashlib
+                from itertools import product
+                points = list(product(range(1, 5), range(5, 9), range(9, 13)))
+                rows = ['%d %d %d' % xyz for xyz in points]
+                source.write_text('\n'.join(rows) + '\n')
+                assert tool("stand")["result"]["managed"] == {"enabled": True, "directory": str(work)}
+                for ext in ('xyz', 'pts', 'ply', 'las', 'laz', 'e57', 'pcd', 'ptx'):
+                    scan = work / ('scan.' + ext)
+                    if ext == 'xyz':
+                        scan.write_bytes(source.read_bytes())
+                    elif ext == 'pcd':
+                        scan.write_text('VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH 8\nHEIGHT 8\nPOINTS 64\nDATA ascii\n'+'\n'.join(rows)+'\n')
+                    elif ext == 'ptx':
+                        scan.write_text('8\n8\n0 0 0\n1 0 0\n0 1 0\n0 0 1\n1 0 0 0\n0 1 0 0\n0 0 1 0\n0 0 0 1\n'+'\n'.join(line+' 0.5' for line in rows)+'\n')
+                    else:
+                        subprocess.run([binary, '--export', str(source), str(scan)], check=True)
+                    digest = hashlib.sha256(scan.read_bytes()).digest()
+                    def activate(path, expected):
+                        tool('open',path=str(path))
+                        assert tool('wait_until_idle',timeout_seconds=60)['idle']
+                        clouds=tool('stand')['result']['clouds']
+                        layer=next(c for c in clouds if c['path']==str(path))
+                        assert layer['points']==layer['remaining']==expected, layer
+                        tool('set_active',index=layer['index'])
+                        return layer['index']
+                    def save(path, count):
+                        job=tool('opslaan',path=str(path))
+                        done=tool('wait_for_job',id=job['job_id'],timeout_seconds=60)
+                        assert done['job']['state']=='complete' and done['job']['points']==count, done
+                    def coords(path):
+                        xyz=Counter(tuple(map(float,line.split()[:3])) for line in path.read_text().splitlines())
+                        return xyz
+                    activate(scan,64)
+                    before=work/'before.xyz'
+                    save(before,64)
+                    assert coords(before)==Counter(points),(ext,coords(before))
+                    tool('thin',percent=50)
+                    assert tool('wait_until_idle',timeout_seconds=60)['idle']
+                    after=work/'after.xyz'
+                    save(after,32)
+                    survivors=coords(after)
+                    assert sum(survivors.values())==32 and survivors<=Counter(points)
+                    if ext in ('pcd','ptx'):
+                        unsupported = work / ('new.' + ext)
+                        denied = rpc('tools/call', {'name': 'pointcloud_opslaan', 'arguments': {'path': str(unsupported)}})
+                        assert denied.get('isError') and 'unsupported export extension' in str(denied), denied
+                        assert not unsupported.exists()
+                        print(f'{ext}: same-format save refused before creating a file',flush=True)
+                    out_ext='e57' if ext in ('pcd','ptx') else ext
+                    saved=work/('edited-'+ext+'.'+out_ext)
+                    save(saved,32)
+                    idx=activate(saved,32)
+                    check=work/'check.xyz'
+                    save(check,32)
+                    assert coords(check)==survivors
+                    assert hashlib.sha256(scan.read_bytes()).digest()==digest
+                    tool('remove',index=idx)
+                    tool('remove',index=0)
+                    print(f'{ext} -> {out_ext}: 64 source points, 32 edited XYZ match after reopen; source digest unchanged',flush=True)
             assert request("DELETE", "/mcp")[0] == 200
             assert request("POST", "/mcp", {"jsonrpc": "2.0", "id": 999, "method": "ping"})[0] == 404
             window.send_signal(signal.SIGTERM)
             assert window.wait(timeout=30) == 0
             assert request("GET", "/gezond")[0] == 503
-            report = {"ok": True, "server": initialized["serverInfo"], "tool_count": len(definitions),
-                      "open_save_points": 0 if args.paused_access else 1000, "mcp_paused": args.paused_access, "idle_rss_kib": idle_rss_kib, "unauthenticated_status": 401, "origin_status": 403,
+            report = {"formats": ["xyz", "pts", "ply", "las", "laz", "e57", "pcd", "ptx"], "source_points_per_format": 64, "edited_points_per_format": 32, "ok": True, "server": initialized["serverInfo"], "tool_count": len(definitions),
+                      "open_save_points": 0 if args.paused_access else 64, "mcp_paused": args.paused_access, "idle_rss_kib": idle_rss_kib, "unauthenticated_status": 401, "origin_status": 403,
                       "health_after_window_exit": 503, "sigterm_exit": 0}
             (args.output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps(report))

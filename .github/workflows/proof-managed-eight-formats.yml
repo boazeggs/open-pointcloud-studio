@@ -1,0 +1,43 @@
+name: Check eight mounted scan formats with published Linux packages
+on:
+  push:
+    branches: [validation/managed-eight-formats-2026480]
+permissions: {contents: read}
+jobs:
+  reopen:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    env:
+      PACKAGE: open-pointcloud-studio_2026.48.0_${{ matrix.arch }}.AppImage
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the headless compositor and software Vulkan driver
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y labwc mesa-vulkan-drivers libegl1 libgl1-mesa-dri
+      - name: Verify and extract the published AppImage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio -p "$PACKAGE" -p "$PACKAGE.sha256"
+          sha256sum --check "$PACKAGE.sha256"
+          chmod +x "$PACKAGE"
+          "./$PACKAGE" --appimage-extract > /dev/null
+      - name: Open eight formats, edit, save and verify every reopened coordinate
+        run: |
+          bash native/packaging/managed-wayland-smoke.sh squashfs-root/AppRun proof/active
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eight-formats-${{ matrix.arch }}
+          path: |
+            proof/*/result.json
+            proof/*/*.png
