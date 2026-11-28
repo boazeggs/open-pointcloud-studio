@@ -1,0 +1,131 @@
+name: Verify published Windows LAS round trip
+on:
+  push:
+    branches: [validation/clean-windows-las-2026480]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - name: Check the released archive in clean Windows containers and reject an eight-record duplicate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+
+          $ErrorActionPreference = 'Stop'
+          $env:NUMBER = '2026.48.0'
+          $app = "$env:RUNNER_TEMP\win\open-pointcloud-studio_2026.48.0_windows-x64"
+          $name = "open-pointcloud-studio_2026.48.0_windows-x64.zip"
+          gh release download v2026.48.0 -R OpenAEC-Foundation/open-pointcloud-studio --pattern $name --pattern SHA256SUMS
+          if ($LASTEXITCODE -ne 0) {throw 'download failed'}
+          $entry = @(Get-Content SHA256SUMS | Where-Object { $_.EndsWith("  $name") })
+          if ($entry.Count -ne 1 -or (Get-FileHash $name).Hash -ne $entry[0].Substring(0,64)) {throw 'archive hash mismatch'}
+          Expand-Archive $name "$env:RUNNER_TEMP\win"
+          $lines = @()
+          $failures = @()
+          # A Windows container with nothing installed: the application
+          # starts there, reports its version and converts a file.
+          $lines += @('', '### Clean Windows container', '')
+          $data = Join-Path $env:RUNNER_TEMP ("grid-" + [guid]::NewGuid())
+          New-Item -ItemType Directory $data | Out-Null
+          $ply = @('ply', 'format ascii 1.0', 'element vertex 8', 'property float x', 'property float y', 'property float z', 'end_header')
+          $corners = foreach ($x in 0, 1) { foreach ($y in 0, 1) { foreach ($z in 0, 1) { "$x $y $z" } } }
+          ($ply + $corners) | Set-Content -Encoding ascii "$data\grid.ply"
+          # The full Windows Server image: Server Core lacks parts that every
+          # Windows 10 and 11 desktop has and the application imports, such
+          # as d3dcompiler_47.dll, so the program could not even start there.
+          $base = 'mcr.microsoft.com/windows/server:ltsc2025'
+          # A runner without the docker command, or with one but no engine
+          # behind it, records that instead of failing on the command.
+          $engine = $false
+          if (Get-Command docker -ErrorAction SilentlyContinue) {
+            docker version
+            $engine = $LASTEXITCODE -eq 0
+          }
+          if (-not $engine) {
+            $lines += 'No container engine on this runner; not checked.'
+            Write-Host "::warning::no container engine on this runner; the clean Windows container was not checked"
+          } else {
+            docker pull $base
+            $version = docker run --rm -v "${app}:C:\app" -v "${data}:C:\data" $base C:\app\open-pointcloud-studio.exe --version
+            if ($LASTEXITCODE -ne 0 -or "$version".Trim() -ne "open-pointcloud-studio $($env:NUMBER)") { $failures += "--version in a clean container gave '$version' (exit $LASTEXITCODE)" }
+            $lines += "- ``$base`` returned version ``$version``."
+            try {
+              $mounts = @('-v', "${app}:C:\app", '-v', "${data}:C:\data")
+              docker run --rm @mounts $base C:\app\open-pointcloud-studio.exe --export C:\data\grid.ply C:\data\grid.las
+              if ($LASTEXITCODE -ne 0) { throw "PLY to LAS exited with $LASTEXITCODE" }
+              docker run --rm @mounts $base C:\app\open-pointcloud-studio.exe --export C:\data\grid.las C:\data\roundtrip.xyz
+              if ($LASTEXITCODE -ne 0) { throw "LAS to XYZ exited with $LASTEXITCODE" }
+              $actual = Get-Content "$data\roundtrip.xyz" -ErrorAction Stop | ForEach-Object {
+                ($_.Trim() -split '\s+' | Select-Object -First 3 | ForEach-Object { [double]$_ }) -join ' '
+              }
+              if ((($actual | Sort-Object) -join ';') -cne ($corners -join ';')) {
+                throw "expected eight source corners, got [$($actual -join '; ')]"
+              }
+              $bytes = (Get-Item "$data\grid.las" -ErrorAction Stop).Length
+              $lines += "- Exported the eight PLY points to LAS ($bytes bytes) and read back all eight XYZ coordinates."
+            } catch {
+              $failures += "Clean Windows export: $_"
+            }
+          }
+
+          $lines | Write-Host
+          if (-not $engine -or $failures.Count -gt 0) { throw "Positive case failed: $failures" }
+
+          $lines = @()
+          $failures = @()
+          # A Windows container with nothing installed: the application
+          # starts there, reports its version and converts a file.
+          $lines += @('', '### Clean Windows container', '')
+          $data = Join-Path $env:RUNNER_TEMP ("grid-" + [guid]::NewGuid())
+          New-Item -ItemType Directory $data | Out-Null
+          $ply = @('ply', 'format ascii 1.0', 'element vertex 8', 'property float x', 'property float y', 'property float z', 'end_header')
+          $corners = foreach ($x in 0, 1) { foreach ($y in 0, 1) { foreach ($z in 0, 1) { "$x $y $z" } } }
+          ($ply + $corners) | Set-Content -Encoding ascii "$data\grid.ply"
+          # Give the converter eight records but duplicate one corner.
+          $fixture = Get-Content "$data\grid.ply"
+          $fixture[-1] = $fixture[-2]
+          $fixture | Set-Content -Encoding ascii "$data\grid.ply"
+          # The full Windows Server image: Server Core lacks parts that every
+          # Windows 10 and 11 desktop has and the application imports, such
+          # as d3dcompiler_47.dll, so the program could not even start there.
+          $base = 'mcr.microsoft.com/windows/server:ltsc2025'
+          # A runner without the docker command, or with one but no engine
+          # behind it, records that instead of failing on the command.
+          $engine = $false
+          if (Get-Command docker -ErrorAction SilentlyContinue) {
+            docker version
+            $engine = $LASTEXITCODE -eq 0
+          }
+          if (-not $engine) {
+            $lines += 'No container engine on this runner; not checked.'
+            Write-Host "::warning::no container engine on this runner; the clean Windows container was not checked"
+          } else {
+            docker pull $base
+            $version = docker run --rm -v "${app}:C:\app" -v "${data}:C:\data" $base C:\app\open-pointcloud-studio.exe --version
+            if ($LASTEXITCODE -ne 0 -or "$version".Trim() -ne "open-pointcloud-studio $($env:NUMBER)") { $failures += "--version in a clean container gave '$version' (exit $LASTEXITCODE)" }
+            $lines += "- ``$base`` returned version ``$version``."
+            try {
+              $mounts = @('-v', "${app}:C:\app", '-v', "${data}:C:\data")
+              docker run --rm @mounts $base C:\app\open-pointcloud-studio.exe --export C:\data\grid.ply C:\data\grid.las
+              if ($LASTEXITCODE -ne 0) { throw "PLY to LAS exited with $LASTEXITCODE" }
+              docker run --rm @mounts $base C:\app\open-pointcloud-studio.exe --export C:\data\grid.las C:\data\roundtrip.xyz
+              if ($LASTEXITCODE -ne 0) { throw "LAS to XYZ exited with $LASTEXITCODE" }
+              $actual = Get-Content "$data\roundtrip.xyz" -ErrorAction Stop | ForEach-Object {
+                ($_.Trim() -split '\s+' | Select-Object -First 3 | ForEach-Object { [double]$_ }) -join ' '
+              }
+              if ((($actual | Sort-Object) -join ';') -cne ($corners -join ';')) {
+                throw "expected eight source corners, got [$($actual -join '; ')]"
+              }
+              $bytes = (Get-Item "$data\grid.las" -ErrorAction Stop).Length
+              $lines += "- Exported the eight PLY points to LAS ($bytes bytes) and read back all eight XYZ coordinates."
+            } catch {
+              $failures += "Clean Windows export: $_"
+            }
+          }
+
+          $failures | Write-Host
+          if ($failures.Count -ne 1 -or $failures[0] -notmatch 'expected eight source corners') {throw 'negative control did not detect the duplicate corner'}
